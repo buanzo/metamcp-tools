@@ -26,7 +26,7 @@ env = { EXAMPLE_NON_SECRET = "value" }
 env_vars = ["TOKEN_FROM_PARENT_ENV"]
 
 # Optional Codex config import. Keep allow_servers narrow.
-[import.codex]
-path = "~/.codex/config.toml"
-allow_servers = ["playwright"]
-deny_servers = ["metamcp-tools"]
+# [import.codex]
+# path = "~/.codex/config.toml"
+# allow_servers = ["playwright"]
+# deny_servers = ["metamcp-tools"]
