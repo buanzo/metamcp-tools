@@ -1,0 +1,9 @@
+[servers.playwright]
+enabled = false
+template = true
+description = "Playwright browser automation MCP via npx. Useful for browser snapshots, UI flow checks, and screenshots."
+command = "npx"
+args = ["@playwright/mcp@latest"]
+startup_timeout_sec = 60
+tool_timeout_sec = 120
+

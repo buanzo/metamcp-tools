@@ -1,0 +1,32 @@
+[gateway]
+dynamic_tools = true
+cache_path = "~/.cache/metamcp-tools/tool-cache.json"
+
+# Optional include directories are resolved beside the real config file target.
+# This keeps symlinked configs useful: ~/shared/foo.toml -> repo config
+# can still include repo-local conf.d/*.toml.
+[include]
+dirs = ["conf.d"]
+files = []
+
+# Child MCP definitions may live in this file or in conf.d/*.toml.
+# Disabled templates may live in conf.d/examples/*.toml but are not included
+# by default unless you add that directory here.
+[servers.example_child]
+description = "Example stdio MCP child."
+command = "python3"
+args = ["/path/to/child_mcp_server.py"]
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+wire_mode = "auto"
+wire_probe_modes = ["framed", "ndjson"]
+wire_probe_timeout_sec = 5
+cwd = "/tmp"
+env = { EXAMPLE_NON_SECRET = "value" }
+env_vars = ["TOKEN_FROM_PARENT_ENV"]
+
+# Optional Codex config import. Keep allow_servers narrow.
+[import.codex]
+path = "~/.codex/config.toml"
+allow_servers = ["playwright"]
+deny_servers = ["metamcp-tools"]

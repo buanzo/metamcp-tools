@@ -1,0 +1,9 @@
+[servers.sqlite_readonly]
+enabled = false
+template = true
+description = "SQLite MCP template for local database inspection. Replace /path/to/database.sqlite before enabling."
+command = "uvx"
+args = ["mcp-server-sqlite", "--db-path", "/path/to/database.sqlite"]
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+

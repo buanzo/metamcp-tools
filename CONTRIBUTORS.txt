@@ -1,0 +1,12 @@
+metamcp-tools contributors
+
+Arturo Busleiman / Buanzo
+- Originated the Codex-first on-demand MCP gateway idea.
+- Defined the first concrete use case: keep slow or situational MCPs available without paying their startup cost on every client launch.
+- Provided repository conventions, security constraints, and initial operational validation.
+
+OpenAI Codex
+- Implemented the initial Python MCP gateway, child process lifecycle, stable proxy tools, best-effort dynamic child tool exposure, tests, and documentation.
+- Added automatic child wire-mode detection with framed/NDJSON probing and status reporting.
+- Prepared the first public repository scaffold.
+

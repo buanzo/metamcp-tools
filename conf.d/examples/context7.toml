@@ -1,0 +1,9 @@
+[servers.context7]
+enabled = false
+template = true
+description = "Context7 documentation MCP via npx. Useful for current library/framework docs; requires npm/npx network install or cache."
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metamcp-tools"
+version = "0.1.0"
+description = "On-demand MCP gateway for lazy child MCP startup."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Arturo Busleiman", email = "arturo@buanzo.org" },
+]
+keywords = ["mcp", "codex", "gateway", "on-demand", "model-context-protocol"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.scripts]
+metamcp-tools = "metamcp_tools.server:main"
+
+[project.urls]
+Homepage = "https://github.com/buanzo/metamcp-tools"
+Repository = "https://github.com/buanzo/metamcp-tools"
+Issues = "https://github.com/buanzo/metamcp-tools/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
