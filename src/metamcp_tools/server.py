@@ -78,7 +78,7 @@ class MetaMCPServer:
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": True}, "resources": {}, "prompts": {}},
                     "serverInfo": {"name": SERVER_NAME, "version": __version__},
-                    "instructions": "Use metamcp_catalog, metamcp_start, and metamcp_call to discover and run child MCP servers on demand. Dynamic registration tools are available only when enabled in config.",
+                    "instructions": "Use metamcp_explain_capabilities, metamcp_catalog, metamcp_start, and metamcp_call to discover and run child MCP servers on demand. Dynamic registration tools are available only when enabled in config.",
                 },
             )
 
@@ -112,6 +112,16 @@ class MetaMCPServer:
                     "type": "object",
                     "properties": {
                         "include_tools": {"type": "boolean", "description": "Include cached child tool names and descriptions.", "default": True}
+                    },
+                },
+            ),
+            "metamcp_explain_capabilities": ToolDefinition(
+                name="metamcp_explain_capabilities",
+                description="Explain the currently loaded gateway capabilities, config-derived facts, and safe discovery next steps without starting child MCPs.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "include_servers": {"type": "boolean", "description": "Include concise per-child server status.", "default": True}
                     },
                 },
             ),
@@ -267,6 +277,7 @@ class MetaMCPServer:
     def _call_base_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "metamcp_catalog": self._tool_catalog,
+            "metamcp_explain_capabilities": self._tool_explain_capabilities,
             "metamcp_search": self._tool_search,
             "metamcp_start": self._tool_start,
             "metamcp_validate_config": self._tool_validate_config,
@@ -281,6 +292,147 @@ class MetaMCPServer:
 
     def _tool_catalog(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return json_content(self.registry.catalog(include_tools=bool(arguments.get("include_tools", True))))
+
+    def _tool_explain_capabilities(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        include_servers = bool(arguments.get("include_servers", True))
+        return json_content(self._capabilities_explanation(include_servers=include_servers))
+
+    def _capabilities_explanation(self, *, include_servers: bool = True) -> dict[str, Any]:
+        sessions = list(self.registry.sessions.values())
+        config_report = validate_gateway_config(self.config)
+        running_count = sum(1 for session in sessions if session.running)
+        cached_tool_count = sum(len(session.tools) for session in sessions)
+        dynamic_registration_count = sum(1 for session in sessions if session.config.dynamic_registration)
+        startable_not_running = [session for session in sessions if session.config.startable and not session.running]
+        not_startable = [session for session in sessions if not session.config.startable]
+        auto_wire_count = sum(1 for session in sessions if session.config.wire_mode == "auto")
+        summary = {
+            **config_report["summary"],
+            "running_count": running_count,
+            "not_startable_count": len(not_startable),
+            "cached_tool_count": cached_tool_count,
+            "dynamic_registered_count": dynamic_registration_count,
+            "base_tool_count": len(self.base_tools),
+            "auto_wire_count": auto_wire_count,
+        }
+
+        result: dict[str, Any] = {
+            "tool": "metamcp_explain_capabilities",
+            "read_only": True,
+            "summary": summary,
+            "phrases": self._capability_phrases(summary=summary, config_ok=bool(config_report["ok"])),
+            "operational_notes": self._capability_operational_notes(config_report=config_report, summary=summary),
+            "recommended_next_steps": self._capability_next_steps(config_report=config_report, startable_not_running=startable_not_running),
+        }
+        if include_servers:
+            result["servers"] = [self._capability_server_entry(session) for session in sessions]
+        return result
+
+    def _capability_phrases(self, *, summary: dict[str, Any], config_ok: bool) -> list[str]:
+        server_count = int(summary["server_count"])
+        startable_count = int(summary["startable_count"])
+        running_count = int(summary["running_count"])
+        cached_tool_count = int(summary["cached_tool_count"])
+        phrases: list[str] = []
+        if server_count == 0:
+            phrases.append("No child MCP servers are configured in the currently loaded gateway config.")
+        else:
+            phrases.append(f"{server_count} child MCP server(s) are configured; {startable_count} are startable.")
+        if running_count:
+            phrases.append(f"{running_count} child MCP server(s) are already running.")
+        else:
+            phrases.append("No child MCP servers are running; this explanation did not start any child process.")
+        if cached_tool_count:
+            phrases.append(f"{cached_tool_count} child tool(s) are known from a running child or cached tool metadata.")
+        else:
+            phrases.append("No child tool metadata is known yet; start a child MCP to discover its tools.")
+        if self.config.allow_dynamic_registration:
+            phrases.append("Dynamic child MCP registration is enabled for this gateway instance.")
+        else:
+            phrases.append("Dynamic child MCP registration is disabled; configured children come from static config/imports.")
+        if int(summary["template_count"]):
+            phrases.append(f"{summary['template_count']} configured child MCP server(s) are templates and cannot be started directly.")
+        if int(summary["disabled_count"]):
+            phrases.append(f"{summary['disabled_count']} configured child MCP server(s) are disabled.")
+        if not config_ok:
+            phrases.append("The loaded config has diagnostics that should be reviewed before relying on the gateway.")
+        return phrases
+
+    def _capability_operational_notes(self, *, config_report: dict[str, Any], summary: dict[str, Any]) -> list[str]:
+        notes = [
+            "This tool is read-only: it does not start, stop, register, unregister, or call child MCP servers.",
+            "Child MCP servers are explicit allowlist entries loaded from config files, include directories, dynamic config, or approved Codex imports.",
+            "Environment values are never returned; only environment key names are listed for operator context.",
+            "The stable proxy path is metamcp_call; discovered child tools may also be published as namespaced dynamic tools after tools/list metadata is known.",
+        ]
+        if int(summary["auto_wire_count"]):
+            notes.append("At least one child uses wire_mode=auto, so startup probes Content-Length JSON-RPC framing and NDJSON in the configured order.")
+        if self.config.cache_path:
+            notes.append(f"Tool metadata cache path: {self.config.cache_path}")
+        else:
+            notes.append("No tool metadata cache path is configured.")
+        if self.config.allow_dynamic_registration:
+            notes.append(f"Dynamic registration config directory: {self.config.dynamic_registration_dir}")
+        else:
+            notes.append("Dynamic registration tools are hidden because allow_dynamic_registration is false.")
+        warnings = config_report["diagnostics"].get("warnings") or []
+        if warnings:
+            notes.append(f"{len(warnings)} config diagnostic warning(s) are present; call metamcp_validate_config for full details.")
+        return notes
+
+    def _capability_next_steps(self, *, config_report: dict[str, Any], startable_not_running: list[Any]) -> list[str]:
+        steps: list[str] = []
+        if not config_report["ok"]:
+            steps.append("Call metamcp_validate_config and fix missing include paths or duplicate server definitions before depending on this gateway.")
+        if not self.registry.sessions:
+            steps.append("Add a child MCP under [servers] or include a conf.d/*.toml file, then restart the gateway.")
+            if self.config.allow_dynamic_registration:
+                steps.append("Use metamcp_register_server to add a session or persisted config child MCP at runtime.")
+            return steps
+        steps.append("Call metamcp_catalog for the full loaded child list and cached child tool metadata.")
+        if any(session.tools for session in self.registry.sessions.values()):
+            steps.append("Call metamcp_search when you know the capability you need but not which child MCP owns it.")
+        if startable_not_running:
+            names = ", ".join(session.config.name for session in startable_not_running[:3])
+            suffix = "" if len(startable_not_running) <= 3 else f", plus {len(startable_not_running) - 3} more"
+            steps.append(f"Start useful child MCPs with metamcp_start; currently startable and idle: {names}{suffix}.")
+        if self.config.allow_dynamic_registration:
+            steps.append("Use metamcp_register_server only for deliberate runtime additions; prefer env_vars for secrets.")
+        else:
+            steps.append("Edit config files and restart the gateway to add children; runtime dynamic registration is disabled.")
+        return steps
+
+    def _capability_server_entry(self, session: Any) -> dict[str, Any]:
+        config = session.config
+        if session.running:
+            next_action = "call metamcp_call or the dynamic child tool"
+        elif config.startable:
+            next_action = "call metamcp_start to launch and refresh tool metadata"
+        else:
+            next_action = f"not startable: {config.start_block_reason}"
+        return {
+            "name": config.name,
+            "description": config.description,
+            "startable": config.startable,
+            "reason": config.start_block_reason,
+            "running": session.running,
+            "tool_count": len(session.tools),
+            "source": config.source,
+            "wire_mode": config.wire_mode,
+            "active_wire_mode": session.active_wire_mode,
+            "dynamic_registration": config.dynamic_registration,
+            "dynamic_persistence": config.dynamic_persistence,
+            "env_keys": sorted(set(config.env) | set(config.env_vars)),
+            "next_action": next_action,
+            "tools": [
+                {
+                    "name": name,
+                    "dynamic_name": dynamic_tool_name(config.name, name),
+                    "description": str(tool.get("description") or ""),
+                }
+                for name, tool in sorted(session.tools.items())
+            ],
+        }
 
     def _tool_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
         max_results = _clamp_int(arguments.get("max_results"), 20, 1, 100)

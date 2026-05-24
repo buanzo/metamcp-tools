@@ -115,6 +115,26 @@ args = ["unused.py"]
     return root
 
 
+def write_secret_env_config(tmp_path: Path) -> Path:
+    child = ROOT / "tests" / "fake_child_mcp.py"
+    config = tmp_path / "gateway.toml"
+    config.write_text(
+        f"""
+[gateway]
+
+[servers.secret_fake]
+description = "Fake child with env"
+command = "{sys.executable}"
+args = ["{child}"]
+env = {{ API_TOKEN = "supersecret-value", NORMAL_FLAG = "normal-value" }}
+env_vars = ["EXTERNAL_SECRET"]
+wire_mode = "ndjson"
+""".strip(),
+        encoding="utf-8",
+    )
+    return config
+
+
 def write_duplicate_config(tmp_path: Path) -> Path:
     child = ROOT / "tests" / "fake_child_mcp.py"
     root = tmp_path / "config.toml"
@@ -214,6 +234,70 @@ def test_initialize_always_advertises_tool_list_changed(tmp_path: Path) -> None:
     response = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     assert response is not None
     assert response["result"]["capabilities"]["tools"]["listChanged"] is True
+
+
+def test_explain_capabilities_is_advertised_and_does_not_start_child(tmp_path: Path) -> None:
+    config = load_gateway_config(config_path=write_config(tmp_path))
+    server = MetaMCPServer(config)
+    tools_response = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    assert tools_response is not None
+    names = {tool["name"] for tool in tools_response["result"]["tools"]}
+    assert "metamcp_explain_capabilities" in names
+    assert "explain_capabilities" not in names
+
+    result = call_tool(server, "metamcp_explain_capabilities", {})
+    payload = text_payload(result)
+    assert payload["read_only"] is True
+    assert payload["summary"]["server_count"] == 1
+    assert payload["summary"]["startable_count"] == 1
+    assert payload["summary"]["running_count"] == 0
+    assert payload["summary"]["cached_tool_count"] == 0
+    assert "No child MCP servers are running" in " ".join(payload["phrases"])
+    assert any("metamcp_catalog" in step for step in payload["recommended_next_steps"])
+    assert payload["servers"][0]["name"] == "fake"
+    assert payload["servers"][0]["next_action"] == "call metamcp_start to launch and refresh tool metadata"
+    assert server.registry.require("fake").running is False
+
+
+def test_explain_capabilities_reflects_running_and_cached_tools(tmp_path: Path) -> None:
+    config = load_gateway_config(config_path=write_config(tmp_path))
+    server = MetaMCPServer(config)
+    call_tool(server, "metamcp_start", {"server_name": "fake"})
+    result = call_tool(server, "metamcp_explain_capabilities", {})
+    payload = text_payload(result)
+
+    assert payload["summary"]["running_count"] == 1
+    assert payload["summary"]["cached_tool_count"] == 1
+    assert payload["servers"][0]["tools"][0]["name"] == "echo"
+    assert payload["servers"][0]["tools"][0]["dynamic_name"] == dynamic_tool_name("fake", "echo")
+    assert any("metamcp_search" in step for step in payload["recommended_next_steps"])
+    server.registry.stop_all()
+
+
+def test_explain_capabilities_reports_template_and_dynamic_registration(tmp_path: Path) -> None:
+    template_server = MetaMCPServer(load_gateway_config(config_path=write_template_config(tmp_path)))
+    template_payload = text_payload(call_tool(template_server, "metamcp_explain_capabilities", {}))
+    assert template_payload["summary"]["template_count"] == 1
+    assert template_payload["summary"]["disabled_count"] == 1
+    assert template_payload["servers"][0]["reason"] == "template"
+    assert "templates" in " ".join(template_payload["phrases"])
+
+    registration_server = MetaMCPServer(load_gateway_config(config_path=write_registration_config(tmp_path)))
+    registration_payload = text_payload(call_tool(registration_server, "metamcp_explain_capabilities", {}))
+    assert registration_payload["summary"]["server_count"] == 0
+    assert any("Dynamic child MCP registration is enabled" in phrase for phrase in registration_payload["phrases"])
+    assert any("metamcp_register_server" in step for step in registration_payload["recommended_next_steps"])
+
+
+def test_explain_capabilities_redacts_env_values(tmp_path: Path) -> None:
+    server = MetaMCPServer(load_gateway_config(config_path=write_secret_env_config(tmp_path)))
+    result = call_tool(server, "metamcp_explain_capabilities", {})
+    raw = result["content"][0]["text"]
+    payload = json.loads(raw)
+
+    assert "supersecret-value" not in raw
+    assert "normal-value" not in raw
+    assert payload["servers"][0]["env_keys"] == ["API_TOKEN", "EXTERNAL_SECRET", "NORMAL_FLAG"]
 
 
 def test_start_then_proxy_call_and_dynamic_tool(tmp_path: Path) -> None:

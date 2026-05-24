@@ -7,6 +7,7 @@ This is useful for slow, situational, or heavyweight MCP servers that you want d
 ## Tools
 
 - `metamcp_catalog`: list child MCP servers and cached tool metadata.
+- `metamcp_explain_capabilities`: explain current gateway capabilities, loaded config facts, and safe discovery next steps.
 - `metamcp_search`: search configured child servers and cached tool metadata.
 - `metamcp_start`: start one child MCP and cache its `tools/list`.
 - `metamcp_validate_config`: validate loaded config without launching children.
@@ -41,7 +42,7 @@ python3 server.py --config config.toml --probe
 python3 server.py --config config.toml --validate
 ```
 
-Then call `metamcp_catalog` to inspect configured children and `metamcp_start` to launch one child. Once its tools are discovered, they are published as direct namespaced tools.
+Then call `metamcp_explain_capabilities` for an agent-oriented explanation of the loaded config, `metamcp_catalog` to inspect configured children, and `metamcp_start` to launch one child. Once its tools are discovered, they are published as direct namespaced tools.
 
 ## Configuration
 

@@ -10,4 +10,5 @@ OpenAI Codex
 - Implemented the initial Python MCP gateway, child process lifecycle, stable proxy tools, best-effort dynamic child tool exposure, tests, and documentation.
 - Added automatic child wire-mode detection with framed/NDJSON probing and status reporting.
 - Implemented guarded dynamic child MCP registration with session/config persistence, managed config writing, unregister support, and validation coverage.
+- Added the read-only metamcp_explain_capabilities bootstrap tool for config-aware agent discovery and operational guidance.
 - Prepared the first public repository scaffold.
