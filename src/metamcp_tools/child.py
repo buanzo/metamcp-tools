@@ -236,7 +236,7 @@ class ChildSession:
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "metamcp-tools", "version": "0.1.0"},
+                "clientInfo": {"name": "metamcp-tools", "version": "0.2.1"},
             },
             timeout=timeout,
         )
@@ -280,6 +280,25 @@ class ChildSession:
 class ChildRegistry:
     def __init__(self, configs: dict[str, ChildServerConfig]) -> None:
         self.sessions = {name: ChildSession(config) for name, config in sorted(configs.items())}
+
+    def add(self, config: ChildServerConfig, replace: bool = False) -> ChildSession:
+        existing = self.sessions.get(config.name)
+        if existing is not None and not replace:
+            raise ValueError(f"Child MCP server {config.name!r} already exists")
+        if existing is not None:
+            existing.stop(kill=True)
+        session = ChildSession(config)
+        self.sessions[config.name] = session
+        self.sessions = dict(sorted(self.sessions.items()))
+        return session
+
+    def remove_dynamic(self, name: str, kill: bool = False) -> ChildServerConfig:
+        session = self.require(name)
+        if not session.config.dynamic_registration:
+            raise ValueError(f"Child MCP server {name!r} is not a dynamic registration")
+        session.stop(kill=kill)
+        del self.sessions[name]
+        return session.config
 
     def catalog(self, include_tools: bool = True) -> dict[str, Any]:
         return {

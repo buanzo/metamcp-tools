@@ -29,8 +29,11 @@ class ChildServerConfig:
     wire_probe_timeout_sec: float = 5.0
     description: str = ""
     source: str = "config"
+    source_path: Path | None = None
     enabled: bool = True
     template: bool = False
+    dynamic_registration: bool = False
+    dynamic_persistence: str | None = None
 
     @property
     def startable(self) -> bool:
@@ -51,6 +54,8 @@ class ChildServerConfig:
 class GatewayConfig:
     servers: dict[str, ChildServerConfig]
     dynamic_tools: bool = True
+    allow_dynamic_registration: bool = False
+    dynamic_registration_dir: Path | None = None
     cache_path: Path | None = None
     log_file: Path | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)

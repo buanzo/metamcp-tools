@@ -1,15 +1,17 @@
 [gateway]
-dynamic_tools = true
+allow_dynamic_registration = false
+dynamic_registration_dir = "dynamic.d"
 cache_path = "~/.cache/metamcp-tools/tool-cache.json"
 
 # Optional include directories are resolved beside the real config file target.
 # This keeps symlinked configs useful: ~/shared/foo.toml -> repo config
 # can still include repo-local conf.d/*.toml.
 [include]
-dirs = ["conf.d"]
+dirs = ["conf.d", "dynamic.d"]
 files = []
 
-# Child MCP definitions may live in this file or in conf.d/*.toml.
+# Child MCP definitions may live in this file, conf.d/*.toml, or generated
+# dynamic.d/*.toml when allow_dynamic_registration is enabled.
 # Disabled templates may live in conf.d/examples/*.toml but are not included
 # by default unless you add that directory here.
 [servers.example_child]

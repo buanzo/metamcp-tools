@@ -13,8 +13,10 @@ This is useful for slow, situational, or heavyweight MCP servers that you want d
 - `metamcp_call`: call a child tool through the stable gateway proxy.
 - `metamcp_status`: inspect child lifecycle state.
 - `metamcp_stop`: stop one child or all child MCP processes.
+- `metamcp_register_server`: when enabled, register a stdio child MCP for the current session or persist it into generated config.
+- `metamcp_unregister_server`: when enabled, remove a dynamically registered child MCP.
 
-When dynamic tools are enabled, the gateway also emits `notifications/tools/list_changed` after a child starts and exposes child tools as namespaced direct tools such as `child__example__echo`. The stable `metamcp_call` path is the compatibility contract; dynamic direct tools depend on client refresh behavior.
+The gateway emits `notifications/tools/list_changed` after child tools are discovered and publishes them as namespaced direct tools such as `child__example__echo`. The stable `metamcp_call` path remains available for control-plane use and bootstrap flows.
 
 ## Quick Start
 
@@ -39,13 +41,17 @@ python3 server.py --config config.toml --probe
 python3 server.py --config config.toml --validate
 ```
 
-Then call `metamcp_catalog` to inspect configured children, `metamcp_start` to launch one child, and `metamcp_call` to proxy a child tool call.
+Then call `metamcp_catalog` to inspect configured children and `metamcp_start` to launch one child. Once its tools are discovered, they are published as direct namespaced tools.
 
 ## Configuration
 
 Child MCP definitions use TOML:
 
 ```toml
+[gateway]
+allow_dynamic_registration = false
+dynamic_registration_dir = "dynamic.d"
+
 [servers.example_child]
 description = "Example stdio MCP child."
 command = "python3"
@@ -60,6 +66,8 @@ env = { EXAMPLE_NON_SECRET = "value" }
 env_vars = ["TOKEN_FROM_PARENT_ENV"]
 ```
 
+Dynamic registration is disabled by default. When `allow_dynamic_registration = true`, `metamcp_register_server` can add a child for the current gateway process with `persistence = "session"` or write a generated TOML file under `dynamic_registration_dir` with `persistence = "config"`. Include that directory from config if you want generated registrations to survive gateway restarts.
+
 `wire_mode = "auto"` probes `Content-Length` JSON-RPC framing and newline-delimited JSON in the configured `wire_probe_modes` order. Set `wire_mode = "framed"` or `wire_mode = "ndjson"` only when you want to skip probing.
 
 Includes are resolved beside the real config file target, so symlinked configs can still include repo-local `conf.d/*.toml`.
@@ -69,9 +77,11 @@ Disabled starter templates live under `conf.d/examples/`. They are examples, not
 ## Security Model
 
 - Child MCP servers are explicit allowlist entries.
+- Runtime registration tools are hidden unless `allow_dynamic_registration = true`.
 - Normal gateway startup performs no child MCP launch or remote I/O before `initialize`.
 - Tool output redacts environment values and summarizes commands without dumping full arguments.
 - Secrets should come from inherited environment variables, not committed config files.
+- Dynamic registration rejects inline secret-like `env` keys by default; use `env_vars` for tokens.
 - Child startup and tool calls are timeout-bounded.
 - Remote HTTP MCP servers are listed as placeholders only; this gateway currently starts and proxies stdio child MCPs.
 
@@ -90,4 +100,3 @@ Build/install locally:
 python3 -m pip install -e .
 metamcp-tools --config config.example.toml --validate
 ```
-

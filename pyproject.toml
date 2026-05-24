@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "metamcp-tools"
-version = "0.1.0"
+version = "0.2.1"
 description = "On-demand MCP gateway for lazy child MCP startup."
 readme = "README.md"
 requires-python = ">=3.11"

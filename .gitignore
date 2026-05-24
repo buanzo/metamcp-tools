@@ -7,3 +7,5 @@ build/
 dist/
 *.egg-info/
 config.toml
+dynamic.d/*.toml
+!dynamic.d/.gitkeep

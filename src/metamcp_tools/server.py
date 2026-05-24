@@ -4,15 +4,22 @@ import argparse
 import json
 import logging
 import sys
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
 from .cache import load_tool_cache, save_tool_cache
 from .child import ChildRegistry, dynamic_tool_name
-from .config import load_gateway_config, validate_gateway_config
+from .config import (
+    load_gateway_config,
+    server_from_table,
+    validate_gateway_config,
+    validate_registration_env,
+    write_dynamic_server_config,
+)
 from .rpc import RPCError, STDIO, StreamPeer, error_response, success_response
-from .types import GatewayConfig, ToolDefinition
+from .types import ChildServerConfig, GatewayConfig, ToolDefinition
 
 SERVER_NAME = "metamcp-tools"
 PROTOCOL_VERSION = "2024-11-05"
@@ -69,9 +76,9 @@ class MetaMCPServer:
                 request_id,
                 {
                     "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {"tools": {"listChanged": bool(self.config.dynamic_tools)}, "resources": {}, "prompts": {}},
+                    "capabilities": {"tools": {"listChanged": True}, "resources": {}, "prompts": {}},
                     "serverInfo": {"name": SERVER_NAME, "version": __version__},
-                    "instructions": "Use metamcp_catalog, metamcp_start, and metamcp_call to discover and run child MCP servers on demand.",
+                    "instructions": "Use metamcp_catalog, metamcp_start, and metamcp_call to discover and run child MCP servers on demand. Dynamic registration tools are available only when enabled in config.",
                 },
             )
 
@@ -97,7 +104,7 @@ class MetaMCPServer:
             return error_response(request_id, -32000, str(exc))
 
     def _build_base_tools(self) -> dict[str, ToolDefinition]:
-        return {
+        tools = {
             "metamcp_catalog": ToolDefinition(
                 name="metamcp_catalog",
                 description="List configured child MCP servers and cached tool metadata without exposing secrets.",
@@ -171,14 +178,58 @@ class MetaMCPServer:
                 },
             ),
         }
+        if self.config.allow_dynamic_registration:
+            tools["metamcp_register_server"] = ToolDefinition(
+                name="metamcp_register_server",
+                description="Register a stdio child MCP server for this session or persist it into the dynamic config directory.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "server_name": {"type": "string"},
+                        "description": {"type": "string", "default": ""},
+                        "command": {"type": "string"},
+                        "args": {"type": "array", "items": {"type": "string"}, "default": []},
+                        "cwd": {"type": "string"},
+                        "env": {"type": "object", "additionalProperties": {"type": "string"}, "default": {}},
+                        "env_vars": {"type": "array", "items": {"type": "string"}, "default": []},
+                        "startup_timeout_sec": {"type": "number", "minimum": 0.1, "default": 10},
+                        "tool_timeout_sec": {"type": "number", "minimum": 0.1, "default": 60},
+                        "wire_mode": {"type": "string", "enum": ["auto", "framed", "ndjson"], "default": "auto"},
+                        "wire_probe_modes": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["framed", "ndjson"]},
+                            "default": ["framed", "ndjson"],
+                        },
+                        "wire_probe_timeout_sec": {"type": "number", "minimum": 0.1, "default": 5},
+                        "persistence": {"type": "string", "enum": ["session", "config"], "default": "session"},
+                        "replace": {"type": "boolean", "default": False},
+                        "allow_inline_secrets": {"type": "boolean", "default": False},
+                        "start": {"type": "boolean", "default": False},
+                        "refresh_tools": {"type": "boolean", "default": True},
+                    },
+                    "required": ["server_name", "command"],
+                },
+            )
+            tools["metamcp_unregister_server"] = ToolDefinition(
+                name="metamcp_unregister_server",
+                description="Unregister a server created through dynamic registration and optionally delete its generated config file.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "server_name": {"type": "string"},
+                        "delete_config": {"type": "boolean", "default": True},
+                        "kill": {"type": "boolean", "default": False},
+                    },
+                    "required": ["server_name"],
+                },
+            )
+        return tools
 
     def _list_tools(self) -> list[dict[str, Any]]:
         tools = [
             {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
             for tool in self.base_tools.values()
         ]
-        if not self.config.dynamic_tools:
-            return tools
         for session in self.registry.sessions.values():
             if not session.config.startable and not session.running:
                 continue
@@ -205,13 +256,12 @@ class MetaMCPServer:
 
         if name in self.base_tools:
             return self._call_base_tool(name, arguments)
-        if self.config.dynamic_tools:
-            for session in self.registry.sessions.values():
-                if not session.config.startable and not session.running:
-                    continue
-                for child_tool_name in session.tools:
-                    if dynamic_tool_name(session.config.name, child_tool_name) == name:
-                        return session.call_tool(child_tool_name, arguments)
+        for session in self.registry.sessions.values():
+            if not session.config.startable and not session.running:
+                continue
+            for child_tool_name in session.tools:
+                if dynamic_tool_name(session.config.name, child_tool_name) == name:
+                    return session.call_tool(child_tool_name, arguments)
         raise KeyError(f"Unknown tool {name!r}")
 
     def _call_base_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -224,6 +274,9 @@ class MetaMCPServer:
             "metamcp_stop": self._tool_stop,
             "metamcp_status": self._tool_status,
         }
+        if self.config.allow_dynamic_registration:
+            handlers["metamcp_register_server"] = self._tool_register_server
+            handlers["metamcp_unregister_server"] = self._tool_unregister_server
         return handlers[name](arguments)
 
     def _tool_catalog(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -247,9 +300,9 @@ class MetaMCPServer:
             )
         status = session.start(refresh_tools=refresh_tools)
         save_tool_cache(self.config.cache_path, self.registry)
-        if self.config.dynamic_tools and session.tools:
+        if session.tools:
             self.pending_tools_changed = True
-        return json_content({"status": status, "dynamic_tools_enabled": self.config.dynamic_tools})
+        return json_content({"status": status, "tool_publication": "live"})
 
     def _tool_validate_config(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         return json_content(validate_gateway_config(self.config))
@@ -270,6 +323,100 @@ class MetaMCPServer:
                 }
             )
         return session.call_tool(tool_name, child_args)
+
+    def _tool_register_server(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            server = self._registered_server_from_args(arguments)
+            replace_existing = bool(arguments.get("replace", False))
+            persistence = str(arguments.get("persistence") or "session").strip().lower()
+            if persistence not in {"session", "config"}:
+                raise ValueError("persistence must be 'session' or 'config'")
+            if server.name in self.registry.sessions and not replace_existing:
+                raise ValueError(f"Child MCP server {server.name!r} already exists")
+            existing = self.registry.sessions.get(server.name)
+            if existing is not None and replace_existing and not existing.config.dynamic_registration:
+                raise ValueError(f"Refusing to replace static child MCP server {server.name!r}; edit its config file instead")
+            if persistence == "config":
+                if self.config.dynamic_registration_dir is None:
+                    raise ValueError("dynamic_registration_dir is not configured")
+                target = write_dynamic_server_config(self.config.dynamic_registration_dir, server, replace=replace_existing)
+                server = dataclass_replace(
+                    server,
+                    source=f"{target}:servers",
+                    source_path=target,
+                    dynamic_persistence="config",
+                )
+            session = self.registry.add(server, replace=replace_existing)
+            status = session.status()
+            started = False
+            if bool(arguments.get("start", False)):
+                status = session.start(refresh_tools=bool(arguments.get("refresh_tools", True)))
+                save_tool_cache(self.config.cache_path, self.registry)
+                started = True
+            self.pending_tools_changed = True
+            return json_content(
+                {
+                    "registered": True,
+                    "server_name": server.name,
+                    "persistence": persistence,
+                    "config_path": str(server.source_path) if server.source_path else None,
+                    "started": started,
+                    "status": status,
+                }
+            )
+        except Exception as exc:
+            return tool_error_content({"registered": False, "message": str(exc)})
+
+    def _registered_server_from_args(self, arguments: dict[str, Any]) -> ChildServerConfig:
+        server_name = _required_str(arguments, "server_name")
+        raw = {
+            "description": str(arguments.get("description") or ""),
+            "command": _required_str(arguments, "command"),
+            "args": _string_list(arguments.get("args", [])),
+            "env": arguments.get("env") or {},
+            "env_vars": _string_list(arguments.get("env_vars", [])),
+            "startup_timeout_sec": arguments.get("startup_timeout_sec", 10),
+            "tool_timeout_sec": arguments.get("tool_timeout_sec", 60),
+            "wire_mode": arguments.get("wire_mode", "auto"),
+            "wire_probe_modes": _string_list(arguments.get("wire_probe_modes", ["framed", "ndjson"])),
+            "wire_probe_timeout_sec": arguments.get("wire_probe_timeout_sec", 5),
+        }
+        if "cwd" in arguments and arguments.get("cwd"):
+            raw["cwd"] = arguments["cwd"]
+        validate_registration_env(raw["env"], allow_inline_secrets=bool(arguments.get("allow_inline_secrets", False)))
+        persistence = str(arguments.get("persistence") or "session").strip().lower()
+        return server_from_table(
+            server_name,
+            raw,
+            source=f"dynamic:{persistence}",
+            base=Path.cwd(),
+            dynamic_registration=True,
+            dynamic_persistence=persistence,
+        )
+
+    def _tool_unregister_server(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        server_name = _required_str(arguments, "server_name")
+        delete_config = bool(arguments.get("delete_config", True))
+        kill = bool(arguments.get("kill", False))
+        try:
+            config = self.registry.remove_dynamic(server_name, kill=kill)
+            deleted_path = None
+            if delete_config and config.dynamic_persistence == "config" and config.source_path is not None:
+                if not _path_is_within(config.source_path, self.config.dynamic_registration_dir):
+                    raise ValueError(f"Refusing to delete config outside dynamic_registration_dir: {config.source_path}")
+                if config.source_path.exists():
+                    config.source_path.unlink()
+                    deleted_path = str(config.source_path)
+            self.pending_tools_changed = True
+            return json_content(
+                {
+                    "unregistered": True,
+                    "server_name": server_name,
+                    "deleted_config": deleted_path,
+                }
+            )
+        except Exception as exc:
+            return tool_error_content({"unregistered": False, "server_name": server_name, "message": str(exc)})
 
     def _tool_stop(self, arguments: dict[str, Any]) -> dict[str, Any]:
         stop_all = bool(arguments.get("all", False))
@@ -308,6 +455,26 @@ def _required_str(arguments: dict[str, Any], name: str) -> str:
     return value.strip()
 
 
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, list):
+        raise ValueError("expected a list of strings")
+    return [str(item) for item in value]
+
+
+def _path_is_within(path: Path | None, directory: Path | None) -> bool:
+    if path is None or directory is None:
+        return False
+    try:
+        path.expanduser().resolve().relative_to(directory.expanduser().resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     if value is None:
         return default
@@ -331,7 +498,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="Gateway config TOML path.")
     parser.add_argument("--codex-config", type=Path, help="Import allowed servers from a Codex config.toml.")
     parser.add_argument("--allow-server", action="append", default=[], help="Allow a Codex mcp_servers entry by name. Repeatable.")
-    parser.add_argument("--no-dynamic-tools", action="store_true", help="Disable best-effort direct dynamic child tools.")
+    parser.add_argument("--no-dynamic-tools", action="store_true", help="Deprecated no-op; child tools are always published dynamically.")
     parser.add_argument("--log-file", type=Path, help="Write logs to this path instead of stderr.")
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
     parser.add_argument("--probe", action="store_true", help="Parse config and print a redacted server summary, then exit.")
