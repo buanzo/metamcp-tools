@@ -19,6 +19,8 @@ TOOLS = [
 
 
 WIRE_MODE = os.environ.get("FAKE_CHILD_WIRE_MODE", "both").strip().lower()
+TOOLS_LIST_FAILURE = os.environ.get("FAKE_CHILD_TOOLS_LIST_FAILURE", "").strip().lower()
+TOOLS_LIST_COUNT = 0
 
 
 def allows_wire(mode: str) -> bool:
@@ -64,6 +66,7 @@ def send_message(message: dict, mode: str) -> None:
 
 
 def main() -> int:
+    global TOOLS_LIST_COUNT
     while True:
         message, mode = read_message()
         if message is None:
@@ -87,6 +90,15 @@ def main() -> int:
             )
             continue
         if method == "tools/list":
+            TOOLS_LIST_COUNT += 1
+            if TOOLS_LIST_FAILURE == "close_stdout_after_first" and TOOLS_LIST_COUNT > 1:
+                return 0
+            if TOOLS_LIST_FAILURE == "json_error_after_first" and TOOLS_LIST_COUNT > 1:
+                send_message(
+                    {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32000, "message": "synthetic tools/list failure"}},
+                    mode,
+                )
+                continue
             send_message({"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}, mode)
             continue
         if method == "tools/call":

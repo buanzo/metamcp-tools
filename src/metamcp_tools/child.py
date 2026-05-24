@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import __version__
 from .rpc import RPCError, StreamPeer
 from .security import command_summary, redact_mapping
 from .types import ChildServerConfig
@@ -27,6 +28,8 @@ class ChildSession:
     started_at: float | None = None
     active_wire_mode: str | None = None
     wire_attempts: list[dict[str, Any]] = field(default_factory=list)
+    restart_count: int = 0
+    last_recovery: dict[str, Any] | None = None
     lock: threading.RLock = field(default_factory=threading.RLock)
 
     @property
@@ -40,7 +43,7 @@ class ChildSession:
                 raise RuntimeError(f"Server {self.config.name!r} is not startable: {reason}")
             if self.running:
                 if refresh_tools or not self.tools:
-                    self.refresh_tools_locked()
+                    self.refresh_tools_with_recovery_locked()
                 return self.status()
             if not self.config.command:
                 raise RuntimeError(f"Server {self.config.name!r} has no subprocess command")
@@ -177,6 +180,58 @@ class ChildSession:
         self.tools = parsed
         return self.tools
 
+    def refresh_tools_with_recovery_locked(self) -> dict[str, dict[str, Any]]:
+        try:
+            return self.refresh_tools_locked()
+        except Exception as exc:
+            if not self._is_recoverable_refresh_failure(exc):
+                raise
+            return self._recover_after_refresh_failure_locked(exc)
+
+    def _recover_after_refresh_failure_locked(self, exc: BaseException) -> dict[str, dict[str, Any]]:
+        old_pid = self.process.pid if self.process is not None else None
+        error = _brief_error(exc)
+        stderr_preview = self.stop_locked(kill=True, collect_stderr=True)
+        recovery: dict[str, Any] = {
+            "ok": False,
+            "reason": "refresh_transport_failure",
+            "error": error,
+            "old_pid": old_pid,
+            "at": time.time(),
+        }
+        if stderr_preview:
+            recovery["stderr_preview"] = stderr_preview
+        self.restart_count += 1
+        self.last_recovery = recovery
+        LOGGER.warning("recovering_child_after_refresh_failure server=%s error=%s", self.config.name, error)
+        try:
+            self.start(refresh_tools=True)
+        except Exception as restart_exc:
+            recovery["restart_error"] = _brief_error(restart_exc)
+            self.last_recovery = recovery
+            raise
+        recovery["ok"] = True
+        recovery["new_pid"] = self.process.pid if self.process is not None else None
+        self.last_recovery = recovery
+        return self.tools
+
+    def _is_recoverable_refresh_failure(self, exc: BaseException) -> bool:
+        if isinstance(exc, RPCError):
+            return False
+        message = str(exc)
+        if message.startswith("Could not list tools for "):
+            return False
+        if isinstance(exc, BrokenPipeError):
+            return True
+        if isinstance(exc, TimeoutError):
+            return self.process is not None and self.process.poll() is not None
+        lowered = message.lower()
+        if "closed stdout" in lowered or "broken pipe" in lowered:
+            return True
+        if "is not running" in lowered:
+            return self.process is not None and self.process.poll() is not None
+        return self.process is not None and self.process.poll() is not None
+
     def stop(self, kill: bool = False) -> dict[str, Any]:
         with self.lock:
             self.stop_locked(kill=kill)
@@ -226,6 +281,8 @@ class ChildSession:
             "wire_probe_modes": list(self.config.wire_probe_modes),
             "wire_probe_timeout_sec": self.config.wire_probe_timeout_sec,
             "wire_attempts": list(self.wire_attempts),
+            "restart_count": self.restart_count,
+            "last_recovery": dict(self.last_recovery) if self.last_recovery else None,
             "env_keys": sorted(set(self.config.env) | set(self.config.env_vars)),
             "command": command_summary(self.config.command, self.config.args) if self.config.command else None,
         }
@@ -236,7 +293,7 @@ class ChildSession:
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "metamcp-tools", "version": "0.2.1"},
+                "clientInfo": {"name": "metamcp-tools", "version": __version__},
             },
             timeout=timeout,
         )
@@ -251,8 +308,8 @@ class ChildSession:
         wire_mode = self._current_wire_mode()
         self.request_id += 1
         request = {"jsonrpc": "2.0", "id": self.request_id, "method": method, "params": params}
-        self.peer.write(request, wire_mode)
         try:
+            self.peer.write(request, wire_mode)
             while True:
                 message, _wire_mode = self.peer.read(timeout=timeout)
                 if message is None:
@@ -260,7 +317,7 @@ class ChildSession:
                 if message.get("id") == self.request_id:
                     return message
                 LOGGER.debug("ignored_child_message server=%s message=%s", self.config.name, message)
-        except (TimeoutError, RPCError, RuntimeError) as exc:
+        except (TimeoutError, RPCError, RuntimeError, OSError) as exc:
             self.last_error = str(exc)
             raise
 

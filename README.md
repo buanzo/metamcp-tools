@@ -71,6 +71,8 @@ Dynamic registration is disabled by default. When `allow_dynamic_registration = 
 
 `wire_mode = "auto"` probes `Content-Length` JSON-RPC framing and newline-delimited JSON in the configured `wire_probe_modes` order. Set `wire_mode = "framed"` or `wire_mode = "ndjson"` only when you want to skip probing.
 
+When `metamcp_start` is called for an already-running child with `refresh_tools=true`, the gateway refreshes `tools/list`. If that refresh finds a stale stdio transport, such as closed stdout or a broken pipe, MetaMCP restarts the child once and refreshes tool metadata on the new process. Live child JSON-RPC errors and live-child timeouts are still surfaced instead of being hidden behind a restart. `metamcp_status` includes `restart_count` and `last_recovery` for diagnostics.
+
 Includes are resolved beside the real config file target, so symlinked configs can still include repo-local `conf.d/*.toml`.
 
 Disabled starter templates live under `conf.d/examples/`. They are examples, not active defaults.

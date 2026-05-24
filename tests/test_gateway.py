@@ -40,6 +40,28 @@ wire_mode = "ndjson"
     return config
 
 
+def write_refresh_failure_config(tmp_path: Path, failure_mode: str) -> Path:
+    child = ROOT / "tests" / "fake_child_mcp.py"
+    config = tmp_path / "gateway.toml"
+    config.write_text(
+        f"""
+[gateway]
+cache_path = "{tmp_path / 'cache.json'}"
+
+[servers.fake]
+description = "Fake child"
+command = "{sys.executable}"
+args = ["{child}"]
+startup_timeout_sec = 5
+tool_timeout_sec = 5
+wire_mode = "ndjson"
+env = {{ FAKE_CHILD_TOOLS_LIST_FAILURE = "{failure_mode}" }}
+""".strip(),
+        encoding="utf-8",
+    )
+    return config
+
+
 def write_auto_wire_config(tmp_path: Path, child_wire_mode: str, probe_modes: list[str]) -> Path:
     child = ROOT / "tests" / "fake_child_mcp.py"
     config = tmp_path / "gateway.toml"
@@ -318,6 +340,51 @@ def test_start_then_proxy_call_and_dynamic_tool(tmp_path: Path) -> None:
     assert tools_response is not None
     names = {tool["name"] for tool in tools_response["result"]["tools"]}
     assert dynamic_tool_name("fake", "echo") in names
+    server.registry.stop_all()
+
+
+def test_start_recovers_stale_stdout_during_running_refresh(tmp_path: Path) -> None:
+    config = load_gateway_config(config_path=write_refresh_failure_config(tmp_path, "close_stdout_after_first"))
+    server = MetaMCPServer(config)
+    first_payload = text_payload(call_tool(server, "metamcp_start", {"server_name": "fake"}))
+    old_pid = first_payload["status"]["pid"]
+
+    second_payload = text_payload(call_tool(server, "metamcp_start", {"server_name": "fake"}))
+    status = second_payload["status"]
+    recovery = status["last_recovery"]
+
+    assert status["running"] is True
+    assert status["tools"] == ["echo"]
+    assert status["restart_count"] == 1
+    assert status["last_error"] is None
+    assert recovery["ok"] is True
+    assert recovery["old_pid"] == old_pid
+    assert recovery["new_pid"] is not None
+    assert "closed stdout" in recovery["error"]
+    server.registry.stop_all()
+
+
+def test_start_does_not_recover_live_tools_list_error(tmp_path: Path) -> None:
+    config = load_gateway_config(config_path=write_refresh_failure_config(tmp_path, "json_error_after_first"))
+    server = MetaMCPServer(config)
+    call_tool(server, "metamcp_start", {"server_name": "fake"})
+
+    response = server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "metamcp_start", "arguments": {"server_name": "fake"}},
+        }
+    )
+    assert response is not None
+    assert "error" in response
+    assert "synthetic tools/list failure" in response["error"]["message"]
+
+    status = server.registry.require("fake").status()
+    assert status["running"] is True
+    assert status["restart_count"] == 0
+    assert status["tools"] == ["echo"]
     server.registry.stop_all()
 
 
