@@ -12,4 +12,5 @@ OpenAI Codex
 - Implemented guarded dynamic child MCP registration with session/config persistence, managed config writing, unregister support, and validation coverage.
 - Added the read-only metamcp_explain_capabilities bootstrap tool for config-aware agent discovery and operational guidance.
 - Hardened running-child tool refresh so stale stdio transports are restarted once without masking live protocol errors.
+- Added a disabled OneSeq live bridge child profile template for users who have OneSeq and its MCP adapter installed locally.
 - Prepared the first public repository scaffold.

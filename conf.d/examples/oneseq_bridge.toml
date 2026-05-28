@@ -1,0 +1,13 @@
+[servers.oneseq_bridge]
+enabled = false
+template = true
+description = "OneSeq live bridge MCP adapter. Requires a running OneSeq app with Config > MCP enabled; reads the app mcp_config.json token unless ONESEQ_MCP_TOKEN overrides it."
+command = "python3"
+args = ["/path/to/tools/openai/mcps/oneseq_bridge_server.py"]
+startup_timeout_sec = 10
+tool_timeout_sec = 30
+wire_mode = "auto"
+wire_probe_modes = ["framed", "ndjson"]
+wire_probe_timeout_sec = 5
+cwd = "/path/to/tools"
+env_vars = ["ONESEQ_MCP_TOKEN", "ONESEQ_MCP_ENDPOINT", "ONESEQ_MCP_CONFIG", "ONESEQ_MCP_TIMEOUT"]

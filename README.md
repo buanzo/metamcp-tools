@@ -75,7 +75,7 @@ When `metamcp_start` is called for an already-running child with `refresh_tools=
 
 Includes are resolved beside the real config file target, so symlinked configs can still include repo-local `conf.d/*.toml`.
 
-Disabled starter templates live under `conf.d/examples/`. They are examples, not active defaults.
+Disabled starter templates live under `conf.d/examples/`. They are examples, not active defaults. The OneSeq bridge profile is shipped there as `oneseq_bridge.toml`; copy it into `conf.d/`, replace `/path/to/tools`, and enable it only on a workstation where OneSeq and its adapter are installed.
 
 ## Security Model
 

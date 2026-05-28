@@ -11,3 +11,5 @@ To use one:
 5. Run `python3 server.py --config config.toml --probe`.
 
 The default root config does not include this directory. If you explicitly include it, the gateway lists disabled templates in `metamcp_catalog`, but `metamcp_start` refuses to launch them until they are copied into an active config path and enabled.
+
+`oneseq_bridge.toml` expects a local checkout that contains `openai/mcps/oneseq_bridge_server.py`. Replace `/path/to/tools` with that checkout path before enabling it.
